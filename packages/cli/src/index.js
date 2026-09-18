@@ -1,10 +1,12 @@
 const express = require("express");
 const cors = require("cors");
 const chalk = require("chalk");
+const { EventBridgeClient, PutEventsCommand } = require("@aws-sdk/client-eventbridge");
 const { connectIotClient } = require("./iot-client");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
+const eventBridge = new EventBridgeClient({});
 
 app.use(cors());
 app.use(express.json());
@@ -28,12 +30,28 @@ app.get("/stream", (req, res) => {
   });
 });
 
-// 2. Placeholder for Day 4: The Replay Trigger
-app.post("/replay", async (req, res) => {
-  const { traceId, replayName } = req.body;
-  console.log(chalk.blue(`🔄 Replay requested for trace: ${traceId}`));
-  // Day 4: Insert AWS SDK EventBridge StartReplay command here
-  res.json({ status: "Replay initiated", replayName });
+// 2. Edit & Resubmit — pushes a (possibly edited) payload back onto the bus
+app.post("/resubmit", async (req, res) => {
+  const { source, detailType, detail, eventBusName } = req.body;
+  try {
+    const result = await eventBridge.send(
+      new PutEventsCommand({
+        Entries: [
+          {
+            Source: source || "vaportrace.resubmit",
+            DetailType: detailType || "Manual Resubmit",
+            Detail: JSON.stringify(detail),
+            EventBusName: eventBusName || "vaportrace-bus",
+          },
+        ],
+      })
+    );
+    console.log(chalk.green("↺ Resubmitted edited payload to cloud"));
+    res.json({ status: "resubmitted", result });
+  } catch (err) {
+    console.error(chalk.red("Resubmit failed:"), err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // 3. Initialize the MQTT Tunnel and Server
@@ -43,7 +61,7 @@ async function start() {
   try {
     await connectIotClient((topic, payload) => {
       console.log(chalk.gray(`[${topic}]`), chalk.white(JSON.stringify(payload)));
-      
+
       // Broadcast the MQTT payload to all connected Next.js dashboards
       sseClients.forEach((client) => {
         client.write(`data: ${JSON.stringify(payload)}\n\n`);
@@ -60,4 +78,4 @@ async function start() {
   }
 }
 
-module.exports = {start};
+module.exports = { start };
