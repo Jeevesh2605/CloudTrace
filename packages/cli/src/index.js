@@ -2,11 +2,13 @@ const express = require("express");
 const cors = require("cors");
 const chalk = require("chalk");
 const { EventBridgeClient, PutEventsCommand } = require("@aws-sdk/client-eventbridge");
+const { XRayClient, GetServiceGraphCommand } = require("@aws-sdk/client-xray");
 const { connectIotClient } = require("./iot-client");
 
 const app = express();
 const PORT = process.env.PORT || 4000;
 const eventBridge = new EventBridgeClient({});
+const xray = new XRayClient({});
 
 app.use(cors());
 app.use(express.json());
@@ -54,7 +56,36 @@ app.post("/resubmit", async (req, res) => {
   }
 });
 
-// 3. Initialize the MQTT Tunnel and Server
+// 3. Poll AWS X-Ray's real service graph and broadcast it to the dashboard
+function startServiceGraphPolling() {
+  setInterval(async () => {
+    try {
+      const now = new Date();
+      const fiveMinAgo = new Date(now.getTime() - 5 * 60 * 1000);
+
+      const result = await xray.send(
+        new GetServiceGraphCommand({
+          StartTime: fiveMinAgo,
+          EndTime: now,
+        })
+      );
+
+      const payload = {
+        type: "service-graph-update",
+        services: result.Services || [],
+        time: now.toISOString(),
+      };
+
+      sseClients.forEach((client) => {
+        client.write(`data: ${JSON.stringify(payload)}\n\n`);
+      });
+    } catch (err) {
+      console.error(chalk.red("X-Ray service graph poll failed:"), err.message);
+    }
+  }, 10000);
+}
+
+// 4. Initialize the MQTT Tunnel and Server
 async function start() {
   console.log(chalk.cyan("🚀 Starting VaporTrace CLI..."));
 
@@ -71,6 +102,7 @@ async function start() {
     app.listen(PORT, () => {
       console.log(chalk.cyan(`🎧 Local API & SSE Stream listening on http://localhost:${PORT}`));
       console.log(chalk.cyan(`👉 Run your Next.js dashboard to connect.`));
+      startServiceGraphPolling();
     });
   } catch (error) {
     console.error(chalk.red("❌ Failed to start CLI:"), error);

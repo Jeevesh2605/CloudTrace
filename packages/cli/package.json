@@ -1,14 +1,17 @@
 {
   "name": "@vaportrace/cli",
   "version": "0.1.0",
-  "bin": { "vaportrace": "bin/vaportrace.js" },
+  "bin": {
+    "vaportrace": "bin/vaportrace.js"
+  },
   "type": "commonjs",
   "dependencies": {
-    "commander": "^12.1.0",
-    "aws-iot-device-sdk-v2": "^1.20.3",
     "@aws-sdk/client-eventbridge": "^3.637.0",
-    "express": "^4.19.2",
+    "@aws-sdk/client-xray": "^3.1135.0",
+    "aws-iot-device-sdk-v2": "^1.20.3",
+    "chalk": "^4.1.2",
+    "commander": "^12.1.0",
     "cors": "^2.8.5",
-    "chalk": "^4.1.2"
+    "express": "^4.19.2"
   }
 }

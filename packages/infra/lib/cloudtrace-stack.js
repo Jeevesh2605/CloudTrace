@@ -21,12 +21,22 @@ class VaporTraceStack extends cdk.Stack {
     // 2. EventBridge bus + Archive
     const { bus, archive } = new VaporTraceEventBus(this, "Bus");
 
-    // 3. Lambda forwarder
+    // 3. Lambda forwarder (with X-Ray active tracing)
     const forwarderFn = new lambda.Function(this, "ForwarderFn", {
       runtime: lambda.Runtime.NODEJS_20_X,
       handler: "forwarder.handler",
       code: lambda.Code.fromAsset("src"),
       timeout: cdk.Duration.seconds(10),
+      tracing: lambda.Tracing.ACTIVE,
+    });
+
+    // 3b. Processor Lambda — the "business logic" target for the schema-drift demo
+    const processorFn = new lambda.Function(this, "ProcessorFn", {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: "processor.handler",
+      code: lambda.Code.fromAsset("src"),
+      timeout: cdk.Duration.seconds(10),
+      tracing: lambda.Tracing.ACTIVE,
     });
 
     // 4. S3 -> default bus -> re-publish onto vaportrace-bus
@@ -41,11 +51,14 @@ class VaporTraceStack extends cdk.Stack {
       targets: [new targets.EventBus(bus)],
     });
 
-    // 5. vaportrace-bus -> forwarder Lambda
+    // 5. vaportrace-bus -> forwarder Lambda AND processor Lambda
     new events.Rule(this, "AllEventsToForwarder", {
       eventBus: bus,
       eventPattern: { source: events.Match.prefix("") },
-      targets: [new targets.LambdaFunction(forwarderFn)],
+      targets: [
+        new targets.LambdaFunction(forwarderFn),
+        new targets.LambdaFunction(processorFn),
+      ],
     });
 
     // 6. IoT Core tunnel — device policy for the local CLI's MQTT cert
@@ -62,9 +75,18 @@ class VaporTraceStack extends cdk.Stack {
         ],
       })
     );
-
-    // Pass the topic prefix into the Lambda as an env var
     forwarderFn.addEnvironment("IOT_TOPIC_PREFIX", "vaportrace/events");
+
+    // Same for the processor Lambda
+    processorFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["iot:Publish"],
+        resources: [
+          `arn:aws:iot:${this.region}:${this.account}:topic/vaportrace/events/*`,
+        ],
+      })
+    );
+    processorFn.addEnvironment("IOT_TOPIC_PREFIX", "vaportrace/events");
 
     new cdk.CfnOutput(this, "DevicePolicyName", {
       value: tunnel.devicePolicy.policyName,

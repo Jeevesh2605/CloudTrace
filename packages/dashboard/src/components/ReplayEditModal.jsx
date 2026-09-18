@@ -10,13 +10,21 @@ export default function ReplayEditModal({ event, onClose }) {
   async function handlePush() {
     try {
       const parsed = JSON.parse(payload);
+      
+      const currentAttempt = event?.detail?.attempt || 1;
+      const traceId = event?.id || event?.detail?.traceId;
+
       const res = await fetch("http://localhost:4000/resubmit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          source: event.source || "vaportrace.resubmit",
-          detailType: event["detail-type"] || "Manual Resubmit",
-          detail: parsed,
+          source: "vaportrace.resubmit",
+          detailType: "Manual Resubmit",
+          detail: {
+            ...parsed,
+            attempt: currentAttempt + 1,
+            replayOf: traceId,
+          },
         }),
       });
       if (!res.ok) throw new Error("Resubmit failed");

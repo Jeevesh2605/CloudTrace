@@ -27,13 +27,14 @@ async function connectIotClient(onMessage) {
   const client = new mqtt5.Mqtt5Client(builder.build());
 
   client.on("messageReceived", (eventData) => {
+    const topic = eventData.message.topicName || eventData.message.topic;
     const payload = eventData.message.payload
       ? Buffer.from(eventData.message.payload).toString("utf-8")
       : "{}";
     try {
-      onMessage(eventData.message.topic, JSON.parse(payload));
+      onMessage(topic, JSON.parse(payload));
     } catch {
-      onMessage(eventData.message.topic, payload);
+      onMessage(topic, payload);
     }
   });
 
