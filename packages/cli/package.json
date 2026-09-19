@@ -1,9 +1,10 @@
 {
-  "name": "@vaportrace/cli",
-  "version": "0.1.0",
+  "name": "vaportrace",
+  "version": "0.1.3",
   "bin": {
     "vaportrace": "bin/vaportrace.js"
   },
+  "license": "MIT",
   "type": "commonjs",
   "dependencies": {
     "@aws-sdk/client-eventbridge": "^3.637.0",
