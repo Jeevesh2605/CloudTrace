@@ -1,20 +1,11 @@
-const { IoTDataPlaneClient, PublishCommand } = require("@aws-sdk/client-iot-data-plane");
-const iotClient = new IoTDataPlaneClient({});
-const TOPIC_PREFIX = process.env.IOT_TOPIC_PREFIX || "vaportrace/events";
-
-async function reportSpan(span) {
-  await iotClient.send(
-    new PublishCommand({
-      topic: `${TOPIC_PREFIX}/span`,
-      payload: Buffer.from(JSON.stringify({ "detail-type": "Span Report", source: "vaportrace.tracer", detail: span })),
-      qos: 0,
-    })
-  );
-}
+const { reportSpan, annotateXRaySegment } = require("./vaportrace-sdk");
 
 exports.handler = async (event, context) => {
   const startTime = new Date().toISOString();
   const start = Date.now();
+
+  annotateXRaySegment(event.id);
+
   const detail = event.detail || {};
   let status = "ok";
   let error = null;
@@ -31,7 +22,7 @@ exports.handler = async (event, context) => {
   }
 
   const span = {
-    traceId: event.id,                       // <-- the free correlation ID
+    traceId: event.id,
     spanId: context.awsRequestId,
     service: "ProcessorLambda",
     startTime,
@@ -49,7 +40,7 @@ exports.handler = async (event, context) => {
     replayOf: detail.replayOf || null,
   };
 
-  await reportSpan(span).catch((e) => console.error("Span report failed:", e));
+  await reportSpan(span);
 
   return span;
 };

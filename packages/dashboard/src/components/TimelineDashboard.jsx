@@ -5,11 +5,11 @@ import ReactFlow, { Background, Controls, MarkerType } from "reactflow";
 import "reactflow/dist/style.css";
 import ReplayEditModal from "@/components/ReplayEditModal";
 
-// 1. Virtual Span Generator for managed AWS services
+// 1. Virtual Span Generator (Explicitly tagged as inferred)
 function generateVirtualSpans(awsEvent) {
   const spans = [];
   const traceId = awsEvent.id;
-  
+
   if (!traceId || awsEvent["detail-type"] === "Span Report") return spans;
 
   const eventTime = new Date(awsEvent.time || Date.now()).getTime();
@@ -21,6 +21,7 @@ function generateVirtualSpans(awsEvent) {
       startTime: new Date(eventTime - 60).toISOString(),
       durationMs: 40,
       status: "ok",
+      inferred: true,
       attributes: { bucket: awsEvent.detail?.bucket?.name, key: awsEvent.detail?.object?.key, region: awsEvent.region }
     });
   } else if (awsEvent.source === "vaportrace.resubmit") {
@@ -30,6 +31,7 @@ function generateVirtualSpans(awsEvent) {
       startTime: new Date(eventTime - 30).toISOString(),
       durationMs: 25,
       status: "ok",
+      inferred: true,
       attributes: { attempt: awsEvent.detail?.attempt, replayOf: awsEvent.detail?.replayOf }
     });
   }
@@ -41,6 +43,7 @@ function generateVirtualSpans(awsEvent) {
       startTime: new Date(eventTime).toISOString(),
       durationMs: 85,
       status: "ok",
+      inferred: true,
       attributes: { ruleMatch: awsEvent["detail-type"], account: awsEvent.account }
     });
   }
@@ -54,8 +57,9 @@ export default function TimelineDashboard() {
   const [selectedSpan, setSelectedSpan] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [verifiedTraceIds, setVerifiedTraceIds] = useState(new Set()); // NEW
 
-  // 2. Ingest & Group Spans by Trace ID
+  // 2. Ingest & Group Spans (Strict Immutability)
   useEffect(() => {
     const eventSource = new EventSource("http://localhost:4000/stream");
     eventSource.onopen = () => setIsConnected(true);
@@ -63,39 +67,51 @@ export default function TimelineDashboard() {
     eventSource.onmessage = (event) => {
       const parsedData = JSON.parse(event.data);
       if (parsedData.type === "service-graph-update") return;
-      
+
+      // NEW — handle real X-Ray verification broadcasts from the CLI
+      if (parsedData.type === "xray-verification-update") {
+        setVerifiedTraceIds((prev) => {
+          const next = new Set(prev);
+          (parsedData.verifiedTraceIds || []).forEach((id) => next.add(id));
+          return next;
+        });
+        return;
+      }
+
       const traceId = parsedData.detail?.traceId || parsedData.id;
       if (!traceId) return;
 
       setTraces((prev) => {
         const existingTrace = prev[traceId] || { spans: [], hasError: false, maxAttempt: 1, rawEvent: null };
-        
-        if (parsedData["detail-type"] !== "Span Report") {
-          existingTrace.rawEvent = parsedData;
-        }
 
-        const incomingSpans = parsedData["detail-type"] === "Span Report" 
-          ? [parsedData.detail] 
-          : generateVirtualSpans(parsedData);
+        const isSpanReport = parsedData["detail-type"] === "Span Report";
+        const newRawEvent = isSpanReport ? existingTrace.rawEvent : parsedData;
+        const incomingSpans = isSpanReport ? [parsedData.detail] : generateVirtualSpans(parsedData);
 
         const newUniqueSpans = incomingSpans.filter(
           (incSpan) => !existingTrace.spans.some((exSpan) => exSpan.spanId === incSpan.spanId)
         );
 
-        if (newUniqueSpans.length === 0 && existingTrace.rawEvent === prev[traceId]?.rawEvent) {
-          return prev; 
+        if (newUniqueSpans.length === 0 && newRawEvent === existingTrace.rawEvent) {
+          return prev;
         }
 
         const updatedSpans = [...existingTrace.spans, ...newUniqueSpans];
         const hasError = updatedSpans.some((s) => s.status === "error");
         const maxAttempt = Math.max(
-          existingTrace.maxAttempt, 
-          ...updatedSpans.map(s => s.attempt || s.attributes?.attempt || 1)
+          existingTrace.maxAttempt,
+          ...updatedSpans.map((s) => s.attempt || s.attributes?.attempt || 1)
         );
 
         return {
           ...prev,
-          [traceId]: { ...existingTrace, spans: updatedSpans, hasError, maxAttempt, lastUpdated: Date.now() },
+          [traceId]: {
+            spans: updatedSpans,
+            hasError,
+            maxAttempt,
+            rawEvent: newRawEvent,
+            lastUpdated: Date.now()
+          },
         };
       });
 
@@ -106,13 +122,12 @@ export default function TimelineDashboard() {
     return () => eventSource.close();
   }, []);
 
-  // 3. Dynamically Generate ReactFlow Nodes & Edges from Spans
+  // 3. Dynamically Generate ReactFlow Nodes & Edges
   const activeTrace = traces[selectedTraceId];
-  
+
   const { nodes, edges } = useMemo(() => {
     if (!activeTrace || activeTrace.spans.length === 0) return { nodes: [], edges: [] };
-    
-    // Sort chronologically to determine the flow order
+
     const sortedSpans = [...activeTrace.spans].sort(
       (a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime()
     );
@@ -120,17 +135,20 @@ export default function TimelineDashboard() {
     const nodes = sortedSpans.map((span, index) => {
       const isError = span.status === "error";
       const isSelected = selectedSpan?.spanId === span.spanId;
-      
+
       return {
         id: span.spanId,
-        position: { x: index * 250 + 50, y: 100 }, // Space them out horizontally
-        data: { 
+        position: { x: index * 250 + 50, y: 100 },
+        data: {
           label: (
             <div className="flex flex-col items-center">
-              <span className="font-bold text-sm tracking-wide">{span.service}</span>
-              <span className="text-[10px] mt-1 opacity-70">{span.durationMs} ms</span>
+              <span className="font-bold text-sm tracking-wide">
+                {span.service}
+              </span>
+              {span.inferred && <span className="text-[9px] opacity-60 uppercase tracking-widest mt-0.5 font-semibold text-amber-200/80">Estimated</span>}
+              <span className="text-[10px] mt-1 opacity-70 font-mono">{span.durationMs} ms</span>
             </div>
-          ) 
+          )
         },
         className: `border-2 transition-all ${
           isError ? "border-red-500 bg-red-950/80 text-red-200" : "border-cyan-500 bg-cyan-950/80 text-cyan-200"
@@ -156,11 +174,6 @@ export default function TimelineDashboard() {
     return { nodes, edges };
   }, [activeTrace, selectedSpan]);
 
-  const handleNodeClick = (event, node) => {
-    const span = activeTrace?.spans.find(s => s.spanId === node.id);
-    if (span) setSelectedSpan(span);
-  };
-
   return (
     <div className="min-h-screen bg-[#050B14] text-gray-300 font-sans p-8 flex flex-col">
       <header className="flex justify-between items-center mb-6">
@@ -184,29 +197,38 @@ export default function TimelineDashboard() {
             ) : (
               Object.entries(traces)
                 .sort(([, a], [, b]) => b.lastUpdated - a.lastUpdated)
-                .map(([id, trace]) => (
-                  <div
-                    key={id}
-                    onClick={() => { setSelectedTraceId(id); setSelectedSpan(null); }}
-                    className={`p-4 rounded-md cursor-pointer border transition-colors ${
-                      selectedTraceId === id ? "bg-gray-800/50 border-cyan-500/50" : "bg-transparent border-transparent hover:bg-gray-900"
-                    }`}
-                  >
-                    <div className="flex justify-between items-start mb-2">
-                      <span className="text-xs font-mono text-gray-400 truncate w-48">{id}</span>
-                      <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-900/30 text-blue-400 border border-blue-800/50">
-                        ✓ Verified in X-Ray
-                      </span>
-                    </div>
-                    <div className="flex justify-between items-center">
-                      <div className="flex gap-2">
-                        <span className={`text-sm font-bold ${trace.hasError ? "text-red-400" : "text-green-400"}`}>{trace.hasError ? "Failed" : "Resolved"}</span>
-                        <span className="text-sm text-gray-500">— {trace.maxAttempt} attempt(s)</span>
+                .map(([id, trace]) => {
+                  const isVerified = verifiedTraceIds.has(id); // NEW
+                  return (
+                    <div
+                      key={id}
+                      onClick={() => { setSelectedTraceId(id); setSelectedSpan(null); }}
+                      className={`p-4 rounded-md cursor-pointer border transition-colors ${
+                        selectedTraceId === id ? "bg-gray-800/50 border-cyan-500/50" : "bg-transparent border-transparent hover:bg-gray-900"
+                      }`}
+                    >
+                      <div className="flex justify-between items-start mb-2">
+                        <span className="text-xs font-mono text-gray-400 truncate w-48">{id}</span>
+                        {isVerified ? (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-900/30 text-blue-400 border border-blue-800/50">
+                            ✓ Verified in X-Ray
+                          </span>
+                        ) : (
+                          <span className="text-[10px] px-2 py-0.5 rounded-full bg-gray-800 text-gray-500 border border-gray-700">
+                            ⏳ Awaiting X-Ray
+                          </span>
+                        )}
                       </div>
-                      <span className="text-xs font-mono text-gray-500">{trace.spans.length} spans</span>
+                      <div className="flex justify-between items-center">
+                        <div className="flex gap-2">
+                          <span className={`text-sm font-bold ${trace.hasError ? "text-red-400" : "text-green-400"}`}>{trace.hasError ? "Failed" : "Resolved"}</span>
+                          <span className="text-sm text-gray-500">— {trace.maxAttempt} attempt(s)</span>
+                        </div>
+                        <span className="text-xs font-mono text-gray-500">{trace.spans.length} spans</span>
+                      </div>
                     </div>
-                  </div>
-                ))
+                  );
+                })
             )}
           </div>
         </div>
@@ -225,16 +247,19 @@ export default function TimelineDashboard() {
                 </button>
               )}
             </div>
-            
+
             <div className="flex-1 relative">
               {!activeTrace || activeTrace.spans.length === 0 ? (
                 <div className="text-center text-sm text-gray-600 mt-20">Select a trace to view its flow</div>
               ) : (
-                <ReactFlow 
-                  nodes={nodes} 
-                  edges={edges} 
-                  onNodeClick={handleNodeClick}
-                  fitView 
+                <ReactFlow
+                  nodes={nodes}
+                  edges={edges}
+                  onNodeClick={(event, node) => {
+                    const span = activeTrace?.spans.find(s => s.spanId === node.id);
+                    if (span) setSelectedSpan(span);
+                  }}
+                  fitView
                   proOptions={{ hideAttribution: true }}
                 >
                   <Background color="#1f2937" gap={20} size={1} />
@@ -245,7 +270,14 @@ export default function TimelineDashboard() {
           </div>
 
           <div className="h-64 bg-[#0A101C] border border-gray-800 rounded-lg shadow-lg flex flex-col overflow-hidden">
-             <div className="p-3 border-b border-gray-800 bg-[#0E1524] font-semibold text-sm text-gray-300">Span Inspector</div>
+            <div className="p-3 border-b border-gray-800 bg-[#0E1524] font-semibold text-sm text-gray-300 flex justify-between items-center">
+              <span>Span Inspector</span>
+              {selectedSpan?.inferred && (
+                <span className="text-xs text-amber-500/80 font-normal">
+                  ⚠️ Timing estimated from event metadata — not a measured span
+                </span>
+              )}
+            </div>
             <div className="flex-1 p-4 overflow-y-auto bg-black/40">
               {!selectedSpan ? (
                 <div className="text-center text-sm text-gray-600 mt-10">Click a node in the graph to inspect attributes and errors.</div>

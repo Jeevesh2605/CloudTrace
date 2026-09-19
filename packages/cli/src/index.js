@@ -2,7 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const chalk = require("chalk");
 const { EventBridgeClient, PutEventsCommand } = require("@aws-sdk/client-eventbridge");
-const { XRayClient, GetServiceGraphCommand } = require("@aws-sdk/client-xray");
+const { XRayClient, GetServiceGraphCommand, GetTraceSummariesCommand } = require("@aws-sdk/client-xray");
 const { connectIotClient } = require("./iot-client");
 
 const app = express();
@@ -13,10 +13,8 @@ const xray = new XRayClient({});
 app.use(cors());
 app.use(express.json());
 
-// Store active frontend dashboard connections
 let sseClients = [];
 
-// 1. The Server-Sent Events (SSE) endpoint for Next.js
 app.get("/stream", (req, res) => {
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
@@ -32,7 +30,6 @@ app.get("/stream", (req, res) => {
   });
 });
 
-// 2. Edit & Resubmit — pushes a (possibly edited) payload back onto the bus
 app.post("/resubmit", async (req, res) => {
   const { source, detailType, detail, eventBusName } = req.body;
   try {
@@ -56,53 +53,65 @@ app.post("/resubmit", async (req, res) => {
   }
 });
 
-// 3. Poll AWS X-Ray's real service graph and broadcast it to the dashboard
-function startServiceGraphPolling() {
+function broadcast(payload) {
+  sseClients.forEach((client) => client.write(`data: ${JSON.stringify(payload)}\n\n`));
+}
+
+// Poll X-Ray for both the aggregate service graph AND real per-trace verification
+function startXRayPolling() {
   setInterval(async () => {
+    const now = new Date();
+    const fiveMinAgo = new Date(now.getTime() - 5 * 60 * 1000);
+
+    // 1. Aggregate service graph (informational, not per-trace)
     try {
-      const now = new Date();
-      const fiveMinAgo = new Date(now.getTime() - 5 * 60 * 1000);
-
-      const result = await xray.send(
-        new GetServiceGraphCommand({
-          StartTime: fiveMinAgo,
-          EndTime: now,
-        })
+      const graphResult = await xray.send(
+        new GetServiceGraphCommand({ StartTime: fiveMinAgo, EndTime: now })
       );
-
-      const payload = {
-        type: "service-graph-update",
-        services: result.Services || [],
-        time: now.toISOString(),
-      };
-
-      sseClients.forEach((client) => {
-        client.write(`data: ${JSON.stringify(payload)}\n\n`);
-      });
+      console.log(chalk.magenta(`📡 X-Ray service graph: ${(graphResult.Services || []).length} services`));
     } catch (err) {
       console.error(chalk.red("X-Ray service graph poll failed:"), err.message);
+    }
+
+    // 2. Real per-trace verification via annotations
+    try {
+      const summaryResult = await xray.send(
+        new GetTraceSummariesCommand({ StartTime: fiveMinAgo, EndTime: now })
+      );
+
+      const verifiedTraceIds = [];
+      (summaryResult.TraceSummaries || []).forEach((summary) => {
+        const annotationValues = summary.Annotations?.vaporTraceId || [];
+        annotationValues.forEach((a) => {
+          const val = a.AnnotationValue?.StringValue;
+          if (val) verifiedTraceIds.push(val);
+        });
+      });
+
+      if (verifiedTraceIds.length > 0) {
+        console.log(chalk.blue(`✓ X-Ray verified ${verifiedTraceIds.length} trace(s)`));
+      }
+
+      broadcast({ type: "xray-verification-update", verifiedTraceIds, time: now.toISOString() });
+    } catch (err) {
+      console.error(chalk.red("X-Ray trace verification poll failed:"), err.message);
     }
   }, 10000);
 }
 
-// 4. Initialize the MQTT Tunnel and Server
 async function start() {
   console.log(chalk.cyan("🚀 Starting VaporTrace CLI..."));
 
   try {
     await connectIotClient((topic, payload) => {
       console.log(chalk.gray(`[${topic}]`), chalk.white(JSON.stringify(payload)));
-
-      // Broadcast the MQTT payload to all connected Next.js dashboards
-      sseClients.forEach((client) => {
-        client.write(`data: ${JSON.stringify(payload)}\n\n`);
-      });
+      broadcast(payload);
     });
 
     app.listen(PORT, () => {
       console.log(chalk.cyan(`🎧 Local API & SSE Stream listening on http://localhost:${PORT}`));
       console.log(chalk.cyan(`👉 Run your Next.js dashboard to connect.`));
-      startServiceGraphPolling();
+      startXRayPolling();
     });
   } catch (error) {
     console.error(chalk.red("❌ Failed to start CLI:"), error);

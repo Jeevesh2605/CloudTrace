@@ -3,14 +3,13 @@ import { useState } from "react";
 
 export default function ReplayEditModal({ event, onClose }) {
   const [payload, setPayload] = useState(
-    JSON.stringify(event.detail || event, null, 2)
+    JSON.stringify(event?.detail || event || {}, null, 2)
   );
   const [status, setStatus] = useState(null);
 
   async function handlePush() {
     try {
       const parsed = JSON.parse(payload);
-      
       const currentAttempt = event?.detail?.attempt || 1;
       const traceId = event?.id || event?.detail?.traceId;
 

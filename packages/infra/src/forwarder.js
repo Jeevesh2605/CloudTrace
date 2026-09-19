@@ -1,75 +1,36 @@
-const { IoTDataPlaneClient, PublishCommand } = require("@aws-sdk/client-iot-data-plane");
-
-const iotClient = new IoTDataPlaneClient({});
-const TOPIC_PREFIX = process.env.IOT_TOPIC_PREFIX || "vaportrace/events";
-
-// 1. The reusable span reporter function
-async function reportSpan(span) {
-  await iotClient.send(
-    new PublishCommand({
-      topic: `${TOPIC_PREFIX}/span`,
-      payload: Buffer.from(JSON.stringify({ 
-        "detail-type": "Span Report", 
-        source: "vaportrace.tracer", 
-        detail: span 
-      })),
-      qos: 0,
-    })
-  );
-}
+const { publishRawEvent, reportSpan, annotateXRaySegment } = require("./vaportrace-sdk");
 
 exports.handler = async (event, context) => {
-  console.log("VaporTrace forwarder received event:", JSON.stringify(event, null, 2));
-
-  // 2. Initialize tracing timers and status
   const startTime = new Date().toISOString();
   const start = Date.now();
+
+  annotateXRaySegment(event.id);
+
   let status = "ok";
   let error = null;
-  let resultMessage = "";
-  
-  const topic = `${TOPIC_PREFIX}/${event["detail-type"] || "unknown"}`;
 
-  // 3. Core Forwarder Logic
   try {
-    await iotClient.send(
-      new PublishCommand({
-        topic,
-        payload: Buffer.from(JSON.stringify(event)),
-        qos: 0,
-      })
-    );
-    resultMessage = `Published event to IoT topic: ${topic}`;
+    console.log("VaporTrace forwarder received event:", JSON.stringify(event));
+    await publishRawEvent(event);
   } catch (err) {
     status = "error";
     error = { message: err.message, stack: err.stack };
-    resultMessage = `Forwarder failed: ${err.message}`;
-    console.error("Failed to publish to IoT Core:", err);
+    console.error("Failed to publish raw event to IoT Core:", err);
   }
 
-  // 4. Construct the Span for the Forwarder
-  const span = {
-    traceId: event.id,                       // Links this execution to the global event trace
-    spanId: context.awsRequestId,            // Unique ID for this specific Lambda execution
+  await reportSpan({
+    traceId: event.id,
+    spanId: context.awsRequestId,
     service: "ForwarderLambda",
     startTime,
     endTime: new Date().toISOString(),
     durationMs: Date.now() - start,
     status,
     error,
-    attributes: {
-      originalSource: event.source,
-      originalDetailType: event["detail-type"],
-      targetTopic: topic,
-      resultMessage,
-    },
+    attributes: { detailType: event["detail-type"], source: event.source },
     attempt: event.detail?.attempt || 1,
-    // Catch EventBridge native replay names if present
-    replayOf: event.detail?.replayOf || event["replay-name"] || null,
-  };
-
-  // 5. Fire the span report asynchronously
-  await reportSpan(span).catch((e) => console.error("Span report failed:", e));
+    replayOf: event.detail?.replayOf || null,
+  });
 
   return { statusCode: 200 };
 };
