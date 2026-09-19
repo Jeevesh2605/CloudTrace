@@ -1,5 +1,7 @@
 # VaporTrace
 
+[![npm version](https://img.shields.io/npm/v/vaportrace.svg)](https://www.npmjs.com/package/vaportrace)
+
 **Real-time cloud event debugger for AWS — like ngrok, but for AWS events.**
 
 VaporTrace streams live execution traces from your AWS account straight to a
@@ -91,6 +93,8 @@ export VAPORTRACE_IOT_ENDPOINT=<the endpoint from step 2>
 vaportrace start
 ```
 
+📦 [vaportrace on npm](https://www.npmjs.com/package/vaportrace)
+
 ### 4. Run the dashboard
 
 ```bash
@@ -144,6 +148,8 @@ packages/
 ## Built with
 
 AWS CDK, EventBridge, Lambda, S3, IoT Core, AWS X-Ray, Next.js, React Flow.
+Published as a standalone [npm package](https://www.npmjs.com/package/vaportrace)
+so anyone can install and run it against their own AWS account.
 
 Built with the help of Claude (Anthropic) for architecture discussion,
 debugging, and code review throughout.
