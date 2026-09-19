@@ -1,3 +1,6 @@
 node_modules/
 .env
 .next/
+*.pem.key
+*.pem.crt
+cert-output.json
