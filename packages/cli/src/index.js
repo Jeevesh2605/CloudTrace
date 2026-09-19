@@ -63,7 +63,6 @@ function startXRayPolling() {
     const now = new Date();
     const fiveMinAgo = new Date(now.getTime() - 5 * 60 * 1000);
 
-    // 1. Aggregate service graph (informational, not per-trace)
     try {
       const graphResult = await xray.send(
         new GetServiceGraphCommand({ StartTime: fiveMinAgo, EndTime: now })
@@ -73,7 +72,6 @@ function startXRayPolling() {
       console.error(chalk.red("X-Ray service graph poll failed:"), err.message);
     }
 
-    // 2. Real per-trace verification via annotations
     try {
       const summaryResult = await xray.send(
         new GetTraceSummariesCommand({ StartTime: fiveMinAgo, EndTime: now })
@@ -104,7 +102,9 @@ async function start() {
 
   try {
     await connectIotClient((topic, payload) => {
-      console.log(chalk.gray(`[${topic}]`), chalk.white(JSON.stringify(payload)));
+      const label = payload?.detail?.service || payload?.["detail-type"] || "event";
+      const status = payload?.detail?.status ? ` [${payload.detail.status}]` : "";
+      console.log(chalk.gray(`[${topic}]`), chalk.white(`${label}${status}`));
       broadcast(payload);
     });
 
